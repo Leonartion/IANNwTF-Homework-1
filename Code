@@ -1,0 +1,233 @@
+import matplotlib.pyplot as plt
+from sklearn.datasets import load_digits
+import random
+import numpy as np
+
+#2.1
+digits = load_digits()
+
+#Extract data into (input, target) tuples
+input = [None] * 1797
+for i in range(1797):
+    input[i] = digits.images[i]
+target = [None] * 1797
+for i in range(1797):
+    target[i] = digits.target[i]
+data = (input, target)
+
+for i in range(1797):
+    #Reshape images into vectors
+    data[0][i] = data[0][i].flatten()
+    #Represent images as float32 values within the [0 to 1] range
+    data[0][i] = data[0][i]/max(data[0][i])
+    #One-hot encode the target digits
+    target_number = data[1][i]
+    data[1][i] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    data[1][i][target_number] = 1
+
+#Shuffle the (input, target) pairs and combine them into minibatches
+def shuffle_pairs(inputs, targets, minibatch_size):
+    combined = list(zip(inputs, targets))
+    random.shuffle(combined)
+
+    shuffled_inputs, shuffled_targets = zip(*combined)
+
+    size_minibatches = len(inputs) // minibatch_size
+
+    for i in range(size_minibatches):
+        start_idx = i * minibatch_size
+        end_idx = (i + 1) * minibatch_size
+        minibatch_inputs = shuffled_inputs[start_idx:end_idx]
+        minibatch_targets = shuffled_targets[start_idx:end_idx]
+
+        minibatch_inputs = np.array(minibatch_inputs)
+        minibatch_targets = np.array(minibatch_targets)
+
+        yield minibatch_inputs, minibatch_targets
+
+#2.2 Implement the Sigmoid Activation Function as an object with a call function
+class SigmActFunc:
+    def call(inputs):
+        return 1 / (1 + np.exp(-inputs))
+    
+    #3.2 Implement the backwards function for the sigmoid
+    def backwards(self, pre_activation, activation, error_signal):
+        dL_dpre_activation = error_signal * activation * (1 - activation)
+
+        return dL_dpre_activation
+    
+#2.3 Implement the the Softmax Activation Function as an object with a call function
+class SoftmActFunc:
+    def call(inputs):
+        # Exponentiate the input
+        exp_inputs = np.exp(inputs)
+
+        # Calculate the denominator by summing the exponentiated values across the second axis (axis=1)
+        denominator = np.sum(exp_inputs, axis=1, keepdims=True)
+
+        # Compute the softmax probabilities
+        softmax_output = exp_inputs / denominator
+
+        return softmax_output
+    
+#2.4 Implement a class representing an MLP layer
+class MLP_Layer:
+    def __init__(self, activation_function, num_units, input_size):
+        self.activation_function = activation_function
+        self.num_units = num_units
+        self.input_size = input_size
+        self.weights = np.random.normal(0.0, 0.2, (64, 1))
+        self.bias = np.zeros(num_units)
+
+    def forward(self, inputs):
+        # Calculate the weighted sum (before activation)
+        if inputs.shape != (1,64): #Here the ValueError is raised 
+                raise ValueError
+        weighted_sum = np.dot(inputs, self.weights) + self.bias
+
+        # Apply the activation function
+        output = self.activation_function.call(inputs = weighted_sum)
+
+        return output
+    
+    #3.3 MLP Layer Weights backwards
+    def calculate_dL_dpreactivation(self, dL_dactivation):
+        dL_dpreactivation = self.activation_function.backwards(self.preactivation, self.activation, dL_dactivation)
+        return dL_dpreactivation
+    
+    def calculate_dL_dW_dL_dinput(self, dL_dpreactivation, inputs):
+        dL_dW = np.dot(inputs.T, dL_dpreactivation) / inputs.shape[0]
+        dL_dinput = np.dot(dL_dpreactivation, self.weights.T)
+        return dL_dW, dL_dinput
+    
+    #3.4 MLP Layer backwards
+    def backwards(self, inputs, dL_dactivation):
+        error_signal = dL_dactivation
+        for layer in reversed(self.layers):
+            error_signal = layer.calculate_dL_dpreactivation(error_signal)
+            dL_dW, dL_dinput = layer.calculate_dL_dW_dL_dinput(error_signal, inputs)
+            error_signal = dL_dinput
+        return error_signal
+
+#2.5 Implement a class representing a full MLP
+class MLP:
+    def __init__(self, layers, layer_sizes):
+        self.layers = []
+
+        for i in range(layers - 1):
+            input_size = layer_sizes[i]
+            output_size = layer_sizes[i + 1]
+            if i == layers-1:
+                layer = MLP_Layer(SoftmActFunc, input_size, output_size)
+            else:
+                layer = MLP_Layer(SigmActFunc, input_size, output_size)
+            self.layers.append(layer)
+
+    def forward(self, inputs):
+        output = inputs
+        if output.shape != (1,64): #Here the ValueError is not raised 
+                raise ValueError
+        for layer in self.layers:
+            output = layer.forward(output)
+        return output
+    
+    #3.5 Gradient Tape and MLP backward
+    def backward(self, inputs, target_labels, learning_rate):
+        activations = self.forward(inputs)
+        minibatch_size = inputs.shape[0]
+
+        # Initialize weight gradients
+        weight_gradients = [{} for _ in self.layers]
+
+        # Compute loss gradients using CCE Loss
+        loss_function = CategoricalCrossEntropyLoss()
+        loss = loss_function.call(activations[-1], target_labels)
+        loss_gradient = loss_function.backwards(activations[-1], loss)
+
+        # Initialize error signal
+        error_signal = loss_gradient
+
+        # Backpropagate through layers
+        for i in range(len(self.layers) - 1, -1, -1):
+            layer = self.layers[i]
+            dL_dactivation = error_signal
+            dL_dpreactivation = layer.calculate_dL_dpreactivation(dL_dactivation)
+
+            weight_gradients[i]['weights'] = np.dot(activations[i - 1].T, dL_dpreactivation) / minibatch_size if i > 0 else np.dot(inputs.T, dL_dpreactivation) / minibatch_size
+            weight_gradients[i]['bias'] = np.sum(dL_dpreactivation, axis=0) / minibatch_size
+
+            if i > 0:
+                dL_dinput = layer.calculate_dL_dinput(dL_dpreactivation)
+                error_signal = dL_dinput
+
+        # Update weights
+        for i in range(len(self.layers)):
+            self.layers[i].weights -= learning_rate * weight_gradients[i]['weights']
+            self.layers[i].bias -= learning_rate * weight_gradients[i]['bias']
+
+
+    
+#2.6 Implement a categorical cross-entropy loss function
+class CategoricalCrossEntropyLoss:
+    def call(self, predictions, target_labels):
+        loss = -np.sum(target_labels * np.log(predictions)) / target_labels.shape[0]
+
+        return loss
+    
+    #3.1 Implement the backwards function for your CCE object
+    def backwards(self, predictions, loss):
+        error_signal = predictions - loss
+        return error_signal
+    
+#3.6 Create a training function
+def train_mlp(mlp, training_data, target_labels, minibatch_size, learning_rate, num_epochs):
+    losses = []
+
+    for epoch in range(num_epochs):
+        total_loss = 0.0
+
+        # Shuffle the data for each epoch
+        shuffled_data = shuffle_pairs(training_data, target_labels, minibatch_size)
+
+        for tuple in shuffled_data:
+            # Get a minibatch
+            minibatch_data = tuple[0]
+            minibatch_labels = tuple[1]
+
+            # Forward pass
+            if minibatch_data.shape != (1,64): #Here the ValueError is not raised 
+                raise ValueError
+            activations = mlp.forward(minibatch_data)
+
+            # Backward pass
+            mlp.backward(minibatch_data, minibatch_labels, learning_rate)
+
+            # Calculate the loss for this minibatch
+            loss_function = CategoricalCrossEntropyLoss()
+            loss = loss_function.call(activations[-1], minibatch_labels)
+            total_loss += loss
+
+        # Calculate the average loss for this epoch
+        average_loss = total_loss / (len(training_data) // minibatch_size)
+        losses.append(average_loss)
+
+        print(f"Epoch {epoch + 1}/{num_epochs}, Average Loss: {average_loss}")
+
+    return losses
+
+# Train the MLP
+mlp = MLP(4, [2, 4, 4, 3])
+training_data = data[0]
+target_labels = [data[1]]
+minibatch_size = 2
+learning_rate = 0.03
+num_epochs = 10
+losses = train_mlp(mlp, training_data, target_labels, minibatch_size, learning_rate, num_epochs)
+
+# Plot the average loss vs. epoch number
+plt.plot(range(1, num_epochs + 1), losses)
+plt.xlabel("Epoch")
+plt.ylabel("Average Loss")
+plt.title("Training Loss vs. Epoch")
+plt.grid(True)
+plt.show()
